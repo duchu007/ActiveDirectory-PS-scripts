@@ -30,6 +30,49 @@ function _getUserGroups
     return $result;
 }
 
+function 2_getUserGroups2
+{
+    [CmdletBinding()]
+    [Alias()]
+    [OutputType([string[]])]
+    Param
+    (
+        [Parameter(Mandatory=$true,
+                   ValueFromPipelineByPropertyName=$true,
+                   Position=0)]
+        [ValidateNotNull()]
+        [ValidateNotNullOrEmpty()]
+        [string]$samAccountName = "PFMBX_B1_7",
+
+        [Parameter(Mandatory=$true,
+                   ValueFromPipelineByPropertyName=$true,
+                   Position=1)]
+        [ValidateNotNull()]
+        [ValidateNotNullOrEmpty()]
+        [string]$domain
+
+    )
+
+    $de = [System.DirectoryServices.DirectoryEntry]("LDAP://$domain");
+    $ds = [System.DirectoryServices.DirectorySearcher]($de);
+    $ds.Filter = "(&(objectClass=user)(samaccountname=$samAccountName))";
+    [void]$ds.PropertiesToLoad.Add("memberof");
+    [void]$ds.PropertiesToLoad.Add("samaccountname");
+    $user = $ds.FindOne();
+    $return = @();
+
+    if($user.Properties.PropertyNames -contains "memberof")    
+    {      
+        $user.Properties.Item("memberof") | ForEach-Object {
+    
+            $return += $_.split(",")[0].substring(3);
+        }    
+    }
+    $de.Close();
+    $de.Dispose();
+    $ds.Dispose();
+    return $return   
+}
 
 
 
