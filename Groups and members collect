@@ -1,0 +1,120 @@
+function _getMembers
+{
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    [Alias()]
+    Param
+    (
+        [Parameter(Mandatory=$true,
+                   ValueFromPipelineByPropertyName=$true,
+                   Position=0)]
+        [ValidateNotNull()]
+        [ValidateNotNullOrEmpty()]
+        $groupName = "PRD.10.SIDD.UD3R.V01.C00.Users",
+
+        [Parameter(Mandatory=$true,
+                   ValueFromPipelineByPropertyName=$true,
+                   Position=1)]
+        [ValidateNotNull()]
+        [ValidateNotNullOrEmpty()]
+        $server    
+    )
+
+    $membersList = New-Object System.Collections.ArrayList;
+    $domainPath = [string]::Format("LDAP://{0}",$server);
+    $de = New-Object System.DirectoryServices.DirectoryEntry($domainPath);
+    $ds = New-object System.DirectoryServices.DirectorySearcher($de);
+    $ds.Filter = "(samaccountname=$groupName)";
+    $result = $ds.FindOne();
+    
+    if(!($result -eq $null))
+    {
+        # HUGE GROUP
+        if($result.Properties.PropertyNames | foreach {if($_ -match 'member;range'){$true}})
+        {
+            $range_from = 0;
+            $range_to = 0;
+            $interval = 1500;
+            $range_to = $range_to+($interval-1);
+
+            do
+            {
+                $i = $false;
+                $range = "member;range=" + $range_from+'-'+$range_to;
+                [void]$ds.PropertiesToLoad.Clear();
+                [void]$ds.PropertiesToLoad.Add($range);
+                $result = $ds.FindOne();
+                if($result.properties.PropertyNames -contains $range)
+                {
+                    $i = $true
+                    [void]($result.Properties.Item($range) | foreach {
+                        $membersList.Add($_.split(",")[0].Substring(3));
+                    });
+                }
+                else
+                {
+                    $range = $range = "member;range=" + $range_from+"-*";
+                    [void]$ds.PropertiesToLoad.Clear();
+                    [void]$ds.PropertiesToLoad.Add($range);
+                    $result = $ds.FindOne();
+                    if($result.properties.PropertyNames -contains $range)
+                    {
+                        [void]($result.Properties.Item($range) | foreach {
+                            $membersList.Add($_.split(",")[0].Substring(3));
+                        });
+                    }
+                }
+
+                $range_from = $range_from+$interval;
+                $range_to = $range_to+$interval;   
+            }
+            until(!$i)
+        }
+        #SMALL GROUP
+        else
+        {
+            [void]($result.Properties.Item("member") | foreach {
+                $membersList.Add($_.split(",")[0].Substring(3));
+            })
+        }
+    }
+    else
+    {
+        return $null;
+    }
+    $ds.Dispose();
+    $de.Close();
+    $de.Dispose();
+    return $membersList;
+}
+
+[string]$date = [System.DateTime]::Now.ToString("yyyyMMdd");
+$reportPath = [string]::Format("C:\Windows\Temp\AssetStore uploads\PRD\GroupsAndMembers\GEA3-{0}-groups-and-members.csv",$date);
+
+$de = [System.DirectoryServices.DirectoryEntry]("LDAP://belwired.net");
+$ds = [System.DirectoryServices.DirectorySearcher]($de);
+$ds.Filter = "(objectclass=group)";
+$ds.PropertiesToLoad.Add("samAccountName");
+$ds.PageSize = 200;
+$ds.SizeLimit = 200;
+$result = $ds.FindAll();
+
+$writer = New-Object System.IO.StreamWriter -ArgumentList $reportPath, $true;
+
+$result.ForEach({
+
+    $gr = $_.Properties.Item("samaccountname")[0];
+    $members = _getMembers $gr -server belwired.net;
+    if($members -ne $null)
+    {
+        $membersAsAString = [string]::Join(",",$members);
+        $writer.WriteLine([string]::Join(";",$gr,$membersAsAString));
+    }
+    else
+    {
+        $writer.WriteLine([string]::Join(";",$gr,"null"));
+    }
+})
+
+$writer.Close();
+$writer.Dispose();
