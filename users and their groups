@@ -1,0 +1,71 @@
+function _getUserGroups
+{
+    [CmdletBinding()]
+    [Alias()]
+    [OutputType([string[]])]
+    Param
+    (
+        [Parameter(Mandatory=$true,
+                   ValueFromPipelineByPropertyName=$true,
+                   Position=0)]
+        [ValidateNotNull()]
+        [ValidateNotNullOrEmpty()]
+        [string]$samAccountName,
+
+        [Parameter(Mandatory=$true,
+                   ValueFromPipelineByPropertyName=$true,
+                   Position=1)]
+        [ValidateNotNull()]
+        [ValidateNotNullOrEmpty()]
+        [string]$domain
+
+    )
+
+    Add-Type -AssemblyName System.DirectoryServices.AccountManagement;
+    $context = New-Object System.DirectoryServices.AccountManagement.PrincipalContext("domain",$domain);
+    $user = [System.DirectoryServices.AccountManagement.UserPrincipal]::FindByIdentity($context,$samAccountName);
+    [string[]]$result = $user.GetGroups().samaccountname;
+    $context.Dispose();
+    $user.Dispose();
+    return $result;
+}
+
+
+
+
+Measure-Command {
+
+    [string]$date = [System.DateTime]::Now.ToString("yyyyMMdd");
+    $reportPath = [string]::Format("C:\Windows\Temp\AssetStore uploads\PRD\UsersAndGroups\GEA3-{0}-users-and-groups.csv",$date);
+
+    $de = [System.DirectoryServices.DirectoryEntry]("LDAP://belwired.net");
+    $ds = [System.DirectoryServices.DirectorySearcher]($de);
+    $ds.Filter = "(&(objectclass=user)(!(objectClass=computer)))";
+    [void]$ds.PropertiesToLoad.Add("samAccountName");
+    $ds.PageSize = 200;
+    $ds.SizeLimit = 200;
+    $users = $ds.FindAll();
+
+    $writer = New-Object System.IO.StreamWriter -ArgumentList $reportPath, $true;
+
+    $users.ForEach({
+
+        $usr = $_.Properties.Item("samaccountname")[0];
+    
+        $groups = _getUserGroups $usr belwired.net;
+        if($groups.count -gt 0)
+        {
+            $groupsAsAString = [string]::Join(",",$groups);
+            $writer.WriteLine([string]::Join(";",$usr,$groupsAsAString));
+        }
+        else
+        {
+            $writer.WriteLine([string]::Join(";",$usr,"null"));
+        }
+    })
+
+    $writer.Close();
+    $writer.Dispose();
+
+
+}
