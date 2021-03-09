@@ -1,0 +1,73 @@
+# SECURITY
+function _CreateAESkey
+{
+    [CmdletBinding()]
+    Param
+    (
+        [Parameter(Mandatory=$true,
+                   ValueFromPipelineByPropertyName=$true,
+                   Position=0)]
+        [ValidateNotNullOrEmpty()]
+        [ValidateNotNull()]
+        $path
+    )
+
+    $key = New-Object Byte[] 32;
+    [Security.Cryptography.RNGCryptoServiceProvider]::Create().GetBytes($key);
+    $key > $path;
+}
+function _CreatePasswordFile
+{
+    [CmdletBinding()]
+    Param
+    (
+        [Parameter(Mandatory=$true,
+                   ValueFromPipelineByPropertyName=$true,
+                   Position=0)]
+        [ValidateNotNullOrEmpty()]
+        [ValidateNotNull()]
+        $path,
+        [Parameter(Mandatory=$true,
+                   ValueFromPipelineByPropertyName=$true,
+                   Position=1)]
+        [ValidateNotNullOrEmpty()]
+        [ValidateNotNull()]
+        $keyFile,
+        [Parameter(Mandatory=$true,
+                   ValueFromPipelineByPropertyName=$true,
+                   Position=2)]
+        [ValidateNotNullOrEmpty()]
+        [ValidateNotNull()]
+        $syntax
+    )
+
+    $Key = Get-Content $keyFile;
+    $Password = $syntax | ConvertTo-SecureString -AsPlainText -Force;
+    $Password | ConvertFrom-SecureString -key $Key | Out-File $path   
+}
+function _DecryptSyntax
+{
+    [CmdletBinding()]
+    [OutputType([string])]
+    Param
+    (
+        [Parameter(Mandatory=$true,
+                   ValueFromPipelineByPropertyName=$true,
+                   Position=0)]
+        [ValidateNotNullOrEmpty()]
+        [ValidateNotNull()]
+        $keyPath = "C:\PSscripts\SIDH_SIDF\security\aes.key",
+        [Parameter(Mandatory=$true,
+                   ValueFromPipelineByPropertyName=$true,
+                   Position=1)]
+        [ValidateNotNullOrEmpty()]
+        [ValidateNotNull()]
+        $encryptedSyntaxPath
+    )
+   
+    $key = Get-Content $keyPath;
+    $synatx = Get-Content $encryptedSyntaxPath;
+    $pass = $synatx | ConvertTo-SecureString -Key $key;
+    $bstr_psw = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($pass);
+    return [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr_psw);
+}
