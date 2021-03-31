@@ -8,9 +8,35 @@ function _getDomainUsers
                    Position=0)]
         [ValidateNotNull()]
         [ValidateNotNullOrEmpty()]
-        $domain
+        [string]$server = "dvsys.dv.be",
+        [Parameter(Mandatory=$true,
+                   ValueFromPipelineByPropertyName=$true,
+                   Position=1)]
+        [ValidateNotNull()]
+        [ValidateNotNullOrEmpty()]
+        [string[]]$properties = @("samaccountname","sn","surname","givenName","description","canonicalName")
     )
 
-   
-    
+    $domainPath = [string]::Format("LDAP://{0}",$server);
+    $de = [System.DirectoryServices.DirectoryEntry]($domainPath);
+    $ds = [System.DirectoryServices.DirectorySearcher]($de);
+    $ds.Filter = "(&(objectClass=user)(!(objectClass=computer)))";
+    $ds.PageSize = 200;
+    $ds.SizeLimit = 1000;
+    $ds.PropertiesToLoad.AddRange($properties);
+    $result = @();
+
+    $ds.FindAll().ForEach({
+
+        $customObject = New-Object psobject;
+        foreach($p in $properties)
+        {
+            $customObject | Add-Member -MemberType NoteProperty -Name $p -Value $_.properties.item($p)[0];
+        }
+        $result += $customObject;
+    })
+    $de.Close();
+    $de.Dispose();
+    $ds.Dispose();
+    return $result;    
 }
