@@ -1,0 +1,85 @@
+function Get-UserLastLogon
+{
+    [CmdletBinding()]
+    [OutputType([datetime[]])]
+    Param
+    (
+        [Parameter(Mandatory=$true,
+                   ValueFromPipelineByPropertyName=$true,
+                   Position=0)]
+        $User = 'pni0nbv',
+        [Parameter(Mandatory=$true,
+                   ValueFromPipelineByPropertyName=$true,
+                   Position=1)]
+        $Domain
+    )
+    Add-Type -AssemblyName System.DirectoryServices.AccountManagement;
+    $domainContx = New-Object System.DirectoryServices.ActiveDirectory.DirectoryContext("domain",$Domain);
+    $dcs = [System.DirectoryServices.ActiveDirectory.Domain]::GetDomain($domainContx).DomainControllers;
+    $lastLogon = @();
+    $whenChanged = @();
+    $return = @();
+    $dcs.ForEach({       
+        $directoryEntry = New-Object System.DirectoryServices.DirectoryEntry("LDAP://$_");
+        $directorySearcher = [adsisearcher]($directoryEntry);
+        $directorySearcher.Filter = [string]::Format("(&(objectClass=user)(samaccountname={0}))",$User);
+        $result = $directorySearcher.FindOne();
+        $lastLogon += ([datetime]::FromFileTime($result.Properties['lastlogon'][0])).toUniversalTime();
+        $whenChanged += $result.Properties['whenchanged'][0];
+        $directoryEntry.Dispose();
+        $directorySearcher.Dispose();      
+    });
+    $return += ($lastLogon | Measure-Object -Maximum).maximum;
+    $return += ($whenChanged | Measure-Object -Maximum).maximum;
+    return $return;   
+}
+
+
+$domain = 'dvsys.dv.be';
+$reportPath = 'C:\PSscripts\LastLogon, mail, all user\report_21_01_21.csv';
+
+$properties = @('samaccountname','mail', 'extensionAttribute2', 'lastLogon', 'lastLogonTimestamp', 'logonCount', 'passwordNeverExpires',
+'whenCreated', 'physicalDeliveryOfficeName', 'preferredLanguage', 'homeDirectory')
+$domainContx = New-Object System.DirectoryServices.ActiveDirectory.DirectoryContext("domain",$domain);
+$pdc = [System.DirectoryServices.ActiveDirectory.Domain]::GetDomain($domainContx).PdcRoleOwner.name;
+$streamWrite = [System.IO.StreamWriter]($reportPath);
+
+$allUsers = Get-ADUser -Server $pdc -Properties $properties -Filter *
+
+
+foreach($user in $allUsers)
+{
+    $values = @();
+
+    $properties.ForEach({
+
+        if(!([string]::IsNullOrEmpty($user.$_)))
+        {
+            $values += $user.$_;
+        }
+        else
+        {
+            $values += "NULL";
+        }         
+    });
+    $info = Get-UserLastLogon -User $user.SamAccountName -Domain $domain;
+    $lastLogon = $info[0];
+    $whenChanged = $info[1];
+    $values += $whenChanged.ToString("dd-MM-yyyy hh:mm:ss");
+
+    if($lastLogon.year -eq 1601)
+    {
+        $values += "NEVER";
+    }
+    else
+    {
+        $values += $lastLogon.ToString("dd-MM-yyyy hh:mm:ss");
+    }
+
+
+    $streamWrite.WriteLine([string]::Join(';',$values));
+}
+
+$streamWrite.Close();
+$streamWrite.Dispose();
+
