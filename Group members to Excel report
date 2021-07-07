@@ -1,0 +1,177 @@
+function _getMembers
+{
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    [Alias()]
+    Param
+    (
+        [Parameter(Mandatory=$true,
+                   ValueFromPipelineByPropertyName=$true,
+                   Position=0)]
+        [ValidateNotNull()]
+        [ValidateNotNullOrEmpty()]
+        $groupName = "PRD.10.SIDD.UD3R.V01.C00.Users",
+
+        [Parameter(Mandatory=$true,
+                   ValueFromPipelineByPropertyName=$true,
+                   Position=1)]
+        [ValidateNotNull()]
+        [ValidateNotNullOrEmpty()]
+        $server    
+    )
+
+    $membersList = New-Object System.Collections.ArrayList;
+    $domainPath = [string]::Format("LDAP://{0}",$server);
+    $de = New-Object System.DirectoryServices.DirectoryEntry($domainPath);
+    $ds = New-object System.DirectoryServices.DirectorySearcher($de);
+    $ds.Filter = "(samaccountname=$groupName)";
+    $result = $ds.FindOne();
+    
+    if(!($result -eq $null))
+    {
+        # HUGE GROUP
+        if($result.Properties.PropertyNames | foreach {if($_ -match 'member;range'){$true}})
+        {
+            $range_from = 0;
+            $range_to = 0;
+            $interval = 1500;
+            $range_to = $range_to+($interval-1);
+
+            do
+            {
+                $i = $false;
+                $range = "member;range=" + $range_from+'-'+$range_to;
+                [void]$ds.PropertiesToLoad.Clear();
+                [void]$ds.PropertiesToLoad.Add($range);
+                $result = $ds.FindOne();
+                if($result.properties.PropertyNames -contains $range)
+                {
+                    $i = $true
+                    [void]($result.Properties.Item($range) | foreach {
+                        $membersList.Add($_.split(",")[0].Substring(3));
+                    });
+                }
+                else
+                {
+                    $range = $range = "member;range=" + $range_from+"-*";
+                    [void]$ds.PropertiesToLoad.Clear();
+                    [void]$ds.PropertiesToLoad.Add($range);
+                    $result = $ds.FindOne();
+                    if($result.properties.PropertyNames -contains $range)
+                    {
+                        [void]($result.Properties.Item($range) | foreach {
+                            $membersList.Add($_.split(",")[0].Substring(3));
+                        });
+                    }
+                }
+
+                $range_from = $range_from+$interval;
+                $range_to = $range_to+$interval;   
+            }
+            until(!$i)
+        }
+        #SMALL GROUP
+        else
+        {
+            [void]($result.Properties.Item("member") | foreach {
+                $membersList.Add($_.split(",")[0].Substring(3));
+            })
+        }
+    }
+    else
+    {
+        return $null;
+    }
+    $ds.Dispose();
+    $de.Close();
+    $de.Dispose();
+    return $membersList;
+}
+
+function _createExcelFile
+{
+    [CmdletBinding()]
+    [OutputType([string])]
+    Param
+    (
+        [Parameter(Mandatory=$true,
+                   Position=0)]
+        [string]$Path = 'C:\Temp\',
+        [Parameter(Mandatory=$true,
+                   Position=1)]
+        [string[]]$Columns
+    )
+
+    Add-Type -Path 'C:\PSscripts\EPPlus.dll';
+    $domName = [System.DirectoryServices.ActiveDirectory.Domain]::GetCurrentDomain().name;
+    $eXfileName = [string]::Join('_',[datetime]::Today.ToString('dd_MM_yyyy'),$($domName.Replace(".","-")),'ADreport.xlsx');
+    $path = [System.IO.Path]::Combine($Path,$eXfileName);
+    if([System.IO.File]::Exists($Path))
+    {
+        $null = [System.IO.File]::Delete($Path);
+    }
+    $eXpackage = New-Object OfficeOpenXml.ExcelPackage $path;
+    $eXworksheet = $eXpackage.Workbook.Worksheets.Add($domName);
+
+    for($i=1; $i -le $Columns.Count; $i++)
+    {
+        $cell = $eXworksheet.Cells[1,$i];
+        $cell.Value = $Columns[$i-1];
+        $cell.Style.Font.Bold = $true;
+        $cell.Style.Fill.PatternType = [OfficeOpenXml.Style.ExcelFillStyle]::Solid;
+        $cell.Style.Fill.BackgroundColor.SetColor([System.Drawing.Color]::DarkGray);
+        $cell.Style.Font.Color.SetColor([System.Drawing.Color]::Black);
+        $cell.AutoFitColumns(0);
+        $cell.Style.Border.BorderAround([OfficeOpenXml.Style.ExcelBorderStyle]::Thin);
+        $cell.AutoFilter = $true;
+    }
+    $eXpackage.Save();
+    $eXpackage.Dispose();
+    return $Path;
+}
+
+#gathering all groups
+$ldapFilter = "(samaccountname=PRD.10.SIDD*)";
+$groups = Get-ADGroup -Server belwired.net -LDAPFilter $ldapFilter;
+
+#create excel file
+$excelFile = _createExcelFile -Path 'C:\PSscripts\AD group member report to excel' -Columns $groups.Name;
+
+
+#create column name and address in row
+$excel = New-Object OfficeOpenXml.ExcelPackage $excelFile;
+$eXworksheet = $excel.Workbook.Worksheets.Item([System.DirectoryServices.ActiveDirectory.Domain]::GetCurrentDomain().name);
+$eXcolumnsAndAddress = @{};
+$eXworksheet.Cells[$eXworksheet.Dimension.Start.Row, $eXworksheet.Dimension.start.Column,1,$eXworksheet.Dimension.End.Column] | foreach {
+    
+    [string]$val = ($_.address -replace '[^a-zA-Z-]');
+    $eXcolumnsAndAddress.Add($eXworksheet.Cells[$_.address].value,$val);
+    
+}
+
+
+
+foreach($group in $groups)
+{
+    Write-Host $group.name -ForegroundColor Green
+    $groupColumnAddr = [string]::Join('',$eXcolumnsAndAddress.get_item($group.Name),$rowNumber);
+
+    $groupMembers = @();
+    $groupMembers += _getMembers $group.Name belwired.net;
+
+    if($groupMembers.Count -gt 0)
+    {
+        for($i = 0; $i -lt $groupMembers.Count; $i++)
+        {
+            $value = $groupMembers[$i];
+            $destinationAddr = [string]::Format("{0}{1}",$groupColumnAddr,$i+2);
+            $eXworksheet.Cells[$destinationAddr].value = $value;    
+        } 
+    }  
+}
+
+
+
+$excel.Save()
+$excel.Dispose()
+(_getMembers PRD.10.SIDD.SB22.GMSA -server belwired.net).count
