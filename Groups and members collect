@@ -91,7 +91,7 @@ function _getMembers
 [string]$date = [System.DateTime]::Now.ToString("yyyyMMdd");
 $reportPath = [string]::Format("C:\Windows\Temp\AssetStore uploads\PRD\GroupsAndMembers\GEA3-{0}-groups-and-members.csv",$date);
 
-$de = [System.DirectoryServices.DirectoryEntry]("LDAP://belwired.net");
+$de = [System.DirectoryServices.DirectoryEntry]("LDAP://XYZ.net");
 $ds = [System.DirectoryServices.DirectorySearcher]($de);
 $ds.Filter = "(objectclass=group)";
 $ds.PropertiesToLoad.Add("samAccountName");
