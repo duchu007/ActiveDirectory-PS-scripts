@@ -1,0 +1,175 @@
+function _Log
+{
+    [CmdletBinding()]
+    [OutputType([int])]
+    Param
+    (
+        [Parameter(Mandatory=$true,
+                   Position=0)]
+        $LogString,
+        [Parameter(Mandatory=$true,
+                   Position=1)]
+        $Path
+    )
+    $entry = [string]::Join(" >> ",[DateTime]::Now.ToString("dd-MM-yyyy hh:mm:ss"),$($LogString+[System.Environment]::NewLine));
+    [System.IO.File]::AppendAllText($Path,$entry);  
+}
+function _DecryptSyntax
+{
+    [CmdletBinding()]
+    [OutputType([string])]
+    Param
+    (
+        [Parameter(Mandatory=$true,
+                   ValueFromPipelineByPropertyName=$true,
+                   Position=0)]
+        [ValidateNotNullOrEmpty()]
+        [ValidateNotNull()]
+        $keyPath = "C:\PSscripts\SIDH_SIDF\security\aes.key",
+        [Parameter(Mandatory=$true,
+                   ValueFromPipelineByPropertyName=$true,
+                   Position=1)]
+        [ValidateNotNullOrEmpty()]
+        [ValidateNotNull()]
+        $encryptedSyntaxPath
+    )
+   
+    $key = Get-Content $keyPath;
+    $synatx = Get-Content $encryptedSyntaxPath;
+    $pass = $synatx | ConvertTo-SecureString -Key $key;
+    $bstr_psw = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($pass);
+    return [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr_psw);
+}
+
+# variables
+$log = 'C:\PSscripts\AssetStore\AssetStore_v2\log.log';
+$remoteDestination = '\\belwired.net\dfs\MFTSHARE\PRD\receive\gea3\gea301\invAD';
+$temporaryDriveLetter = 'Y';
+$temporaryLocalRepository = 'C:\Windows\Temp\AssetStore uploads\PRD';
+$ErrorActionPreference = "Stop";
+$today = [System.DateTime]::Now.ToString("yyyyMMdd");
+$domain = 'belwired';
+$objectsTypes = @('user','posixAccount','posixGroup','group')
+
+# get pdc server of affected domain
+$context = [System.DirectoryServices.ActiveDirectory.DirectoryContext]::new("Domain",$domain);
+$domainObject = [System.DirectoryServices.ActiveDirectory.Domain]::GetDomain($context);
+$dc = $domainObject.FindDomainController().Name;
+
+_Log "---Script start---" $log;
+
+# security
+$encryptionKey = 'C:\PSscripts\AssetStore\AssetStore_v2\security\aes.key';
+$encryptedUser = 'C:\PSscripts\AssetStore\AssetStore_v2\security\usr.sec';
+$encryptedPass = 'C:\PSscripts\AssetStore\AssetStore_v2\security\pass.sec'
+$user = _DecryptSyntax -keyPath $encryptionKey -encryptedSyntaxPath $encryptedUser;
+$pass = (_DecryptSyntax -keyPath $encryptionKey -encryptedSyntaxPath $encryptedPass) | 
+        ConvertTo-SecureString -AsPlainText -Force;
+$credential = [System.Management.Automation.PSCredential]::new($user,$pass);
+
+# mounting drive
+try
+{
+    $drive = New-PSDrive -Name $temporaryDriveLetter -PSProvider FileSystem -Root $remoteDestination -Credential $credential;
+}
+
+catch
+{
+    _Log "Cannot mount drive as $temporaryDriveLetter, details: $($_.exception)" $log;
+    break;
+}
+
+# generate reports
+# user all properties
+try
+{
+    $type = 'objectClass-user';
+    _Log "generate report for: $type" $log;
+    $userReportFile = [string]::Format("{0}\GEA3-{1}-{2}-{3}.csv",$temporaryLocalRepository,$today,$domain,$type);
+    CSVDE -s $dc -f $userReportFile -r '(&(objectclass=user)(objectcategory=person))';
+    _Log "OK" $log;
+}
+catch
+{
+    _Log "Error during creation $userReportFile" $log;
+}
+
+# posixaccount all exclude password
+try
+{
+    $type = 'objectClass-posixAccount';
+    _Log "generate report for: $type" $log;
+    $posixReportFile = [string]::Format("{0}\GEA3-{1}-{2}-{3}.csv",$temporaryLocalRepository,$today,$domain,$type);
+    CSVDE -s $dc -f $posixReportFile -r '(&(objectclass=posixAccount)(objectcategory=account))' -o 'unixUserPassword,userPassword,passwordHistList';
+    _Log "OK" $log;
+}
+catch
+{
+    _Log "Error during creation $posixReportFile" $log;
+}
+
+# posixGroup all exclude unixUserPassword
+try
+{
+    $type = 'objectClass-posixGroup';
+    _Log "generate report for: $type" $log; 
+    $posixGroupReportFile = [string]::Format("{0}\GEA3-{1}-{2}-{3}.csv",$temporaryLocalRepository,$today,$domain,$type);
+    CSVDE -s $dc -f $posixGroupReportFile -r '(objectclass=posixgroup)' -o 'unixUserPassword';
+    _Log "OK" $log;
+}
+catch
+{
+    _Log "Error during creation $posixGroupReportFile" $log;
+}
+
+# Groups
+try
+{
+    $type = 'objectClass-group';
+    _Log "generate report for: $type" $log;
+    $groupReportFile = [string]::Format("{0}\GEA3-{1}-{2}-{3}.csv",$temporaryLocalRepository,$today,$domain,$type);
+    CSVDE -s $dc -f $groupReportFile -r '(objectclass=group)';
+    _Log "OK" $log;
+}
+catch
+{
+    _Log "Error during creation $groupReportFile" $log;
+}
+
+
+# copying reports files
+$currentReportFiles = [System.IO.directory]::GetFiles($temporaryLocalRepository,[string]::Format("*{0}*",$today));
+
+$currentReportFiles.ForEach({
+
+    $sourcePath = $_;
+    $fileName = [System.IO.Path]::GetFileName($sourcePath);
+    $fullDestinationPath = [System.IO.Path]::Combine($drive.Root,$fileName);
+
+    try
+    {
+        _Log "Copying $sourcePath..." $log;
+        [System.IO.File]::Copy($sourcePath, $fullDestinationPath,$true);
+        _Log "OK!" $log;
+        # delete report file when copying done
+        _Log "removing temp file $fileName..." $log;
+        [System.IO.File]::Delete($sourcePath);
+        _Log "OK!" $log;    
+    }
+    catch
+    {
+        _Log $_.exception $log;
+        continue;
+    }    
+})
+
+# removing drive letter
+try
+{
+    Remove-PSDrive -Name $temporaryDriveLetter;
+    _Log "Temporary drive $temporaryDriveLetter successfully removed!" $log;
+}
+catch
+{
+    _Log "Error during removing drive $temporaryDriveLetter, details: $($_.exception)" $log;
+}
