@@ -1,0 +1,441 @@
+<#
+modify: 18.12.2020
+Author: Kacper Gostek
+title: Migration of group ADGROUPSHADOW
+version: 1.2
+#>
+function Write-Log
+{
+    [CmdletBinding()]
+    [OutputType([int])]
+    Param
+    (
+        [Parameter(Mandatory=$true,
+                   Position=0)]
+        $logString,
+        [Parameter(Mandatory=$true,
+                   Position=1)]
+        $logPath
+    )
+    $entry = [string]::Join(" >> ",[DateTime]::Now.ToString("dd-MM-yyyy hh:mm:ss"),$($logString+[System.Environment]::NewLine));
+    [System.IO.File]::AppendAllText($logPath,$entry); 
+}
+function Remove-UnnecesarryGroupMembers
+{
+    [CmdletBinding()]
+    [OutputType([bool])]
+    Param
+    (
+        [Parameter(Mandatory=$true,
+                   Position=0)]
+        [string]$sourceGroup = "t3st",
+        [Parameter(Mandatory=$true,
+                   Position=1)]
+        [string]$targetGroup = "t3st",        
+        [Parameter(Mandatory=$false,
+                   Position=2)]
+        [ValidateSet("dvsys", "belwired")]
+        [string]$sourceDomain = "dvsys",
+        [Parameter(Mandatory=$false,
+                   Position=3)]
+        [ValidateSet("dvsys", "belwired")]
+        [string]$targetDomain = "belwired",
+        [Parameter(Mandatory=$true,
+                   Position=4)]
+        [string]$log
+    )
+    Add-Type -AssemblyName System.DirectoryServices.AccountManagement;
+    # pdc find
+    $s_context = New-Object System.DirectoryServices.ActiveDirectory.DirectoryContext("domain",$sourceDomain);
+    $srcPdc = [System.DirectoryServices.ActiveDirectory.Domain]::GetDomain($s_context).PdcRoleOwner.Name;
+    $t_context = New-Object System.DirectoryServices.ActiveDirectory.DirectoryContext("domain",$targetDomain);
+    $trgtPdc = [System.DirectoryServices.ActiveDirectory.Domain]::GetDomain($t_context).PdcRoleOwner.Name;
+    # source group object, members
+    $sContx = new-object System.DirectoryServices.AccountManagement.PrincipalContext("domain",$srcPdc);
+    $srcGr = [System.DirectoryServices.AccountManagement.GroupPrincipal]::FindByIdentity($sContx, $sourceGroup);
+    # destination group object, members
+    $tContx = new-object System.DirectoryServices.AccountManagement.PrincipalContext("domain",$trgtPdc);
+    $trgtGr = [System.DirectoryServices.AccountManagement.GroupPrincipal]::FindByIdentity($tContx, $targetGroup);
+
+    [bool]$returnObj = $true;
+    $toRemove = @();
+    $trgtGr.Members.ForEach({
+    
+        $objMember = [System.DirectoryServices.AccountManagement.UserPrincipal]::FindByIdentity($sContx,$_.samaccountname);
+        if($objMember)
+        {
+            if(!($objMember.IsMemberOf($srcGr)))
+            {
+                $toRemove += $_;
+            };
+        };
+    });
+
+    for($i =0; $i -lt $toRemove.Count; $i++)
+    {
+        [void]$trgtGr.Members.Remove($toRemove[$i]);
+        Write-Log -logPath $log -logString "$($toRemove[$i].samaccountname) - will be removed from group";   
+    }
+    try
+    {
+        $trgtGr.Save();
+    }
+    catch
+    {
+        Write-Log -logPath $log -logString "error during removing account(s)";
+        $returnObj = $false;
+    }   
+    return $returnObj;
+}
+function Copy-GroupMembers
+{
+    [CmdletBinding()]
+    [OutputType([bool])]
+    Param
+    (
+        [Parameter(Mandatory=$true,
+                   Position=0)]
+        [string]$sourceGroup,
+        [Parameter(Mandatory=$true,
+                   Position=1)]
+        [string]$destinationGroup,        
+        [Parameter(Mandatory=$false,
+                   Position=2)]
+        [ValidateSet("dvsys", "belwired")]
+        [string]$sourceDomain,
+        [Parameter(Mandatory=$false,
+                   Position=3)]
+        [ValidateSet("dvsys", "belwired")]
+        [string]$destinationDomain,
+        [Parameter(Mandatory=$true,
+                   Position=4)]
+        [string]$log
+    )
+    Add-Type -AssemblyName System.DirectoryServices.AccountManagement;
+    # pdc find
+    $s_context = New-Object System.DirectoryServices.ActiveDirectory.DirectoryContext("domain",$sourceDomain);
+    $srcPdc = [System.DirectoryServices.ActiveDirectory.Domain]::GetDomain($s_context).PdcRoleOwner.Name;
+    $d_context = New-Object System.DirectoryServices.ActiveDirectory.DirectoryContext("domain",$destinationDomain);
+    $destPdc = [System.DirectoryServices.ActiveDirectory.Domain]::GetDomain($d_context).PdcRoleOwner.Name;
+    # source group object, members
+    $sContx = new-object System.DirectoryServices.AccountManagement.PrincipalContext("domain",$srcPdc);
+    $srcGr = [System.DirectoryServices.AccountManagement.GroupPrincipal]::FindByIdentity($sContx, $sourceGroup);
+    # destination group object, members
+    $dContx = new-object System.DirectoryServices.AccountManagement.PrincipalContext("domain",$destPdc);
+    $destGr = [System.DirectoryServices.AccountManagement.GroupPrincipal]::FindByIdentity($dContx, $destinationGroup);
+
+    [bool]$returnObj = $true;
+    # find users equivalent list in destination domain
+    $toAdd = @();
+    $srcGr.Members.ForEach({
+        $usrObj = [System.DirectoryServices.AccountManagement.UserPrincipal]::FindByIdentity($dContx,$_.samaccountname);
+        if($usrObj)
+        {
+            if(!($usrObj.IsMemberOf($destGr)))
+            {
+                $toAdd += $usrObj;
+            };
+        };    
+    });
+    for($i = 0; $i -lt $toAdd.count; $i++)
+    {
+        [void]$destGr.Members.Add($toAdd[$i]);
+        Write-Log -logPath $log -logString "$($toAdd[$i].samaccountname) - will be add to group";
+    }
+    try
+    {
+        $destGr.Save();
+    }
+    catch
+    {
+        Write-Log -logPath $log -logString "error during adding account(s)";
+        $returnObj = $false;
+    }
+    return $returnObj;
+}
+function Validate-Group
+{
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    Param
+    (
+        [Parameter(Mandatory=$true,
+                   Position=0)]
+        [string]$group,
+        [Parameter(Mandatory=$true,
+                   Position=1)]
+        [string[]]$domains = @("dvsys.dv.be","belwired.net")
+    )
+        Add-Type -AssemblyName System.DirectoryServices.AccountManagement;
+        $groupExist = @();
+        $domains | % { 
+            $context = New-Object System.DirectoryServices.ActiveDirectory.DirectoryContext("domain",$_);
+            $pdc = [System.DirectoryServices.ActiveDirectory.Domain]::GetDomain($context).PdcRoleOwner.Name;
+            $pCntx = new-object System.DirectoryServices.AccountManagement.PrincipalContext("domain",$pdc);
+            $groupObj = [System.DirectoryServices.AccountManagement.GroupPrincipal]::FindByIdentity($pCntx, $group);
+            if($groupObj -ne $null)
+            {
+                $groupExist += $true;
+                $groupObj.Dispose();
+            }
+            else
+            {
+                $groupExist += $false;
+            }
+            $pCntx.Dispose();                 
+        }
+        return $(!($groupExist.Contains($false)))     
+}
+function Compare-GroupMemberships
+{
+    [CmdletBinding()]
+    [OutputType([bool])]
+    Param
+    (
+        [Parameter(Mandatory=$true,
+                   Position=0)]
+        $sourceGroup = 't3st',
+        [Parameter(Mandatory=$true,
+                   Position=1)]
+        $destinationGroup = 't3st',
+        [Parameter(Mandatory=$true,
+                   Position=2)]
+        [ValidateSet("dvsys", "belwired")]
+        $sourceDomain = 'dvsys',
+        [Parameter(Mandatory=$true,
+                   Position=3)]
+        [ValidateSet("dvsys", "belwired")]
+        $destinationDomain = 'belwired'
+    )
+
+    Add-Type -AssemblyName System.DirectoryServices.AccountManagement;
+    # pdc find
+    $srcContext = New-Object System.DirectoryServices.ActiveDirectory.DirectoryContext("domain",$sourceDomain);
+    $srcpdc = [System.DirectoryServices.ActiveDirectory.Domain]::GetDomain($srcContext).PdcRoleOwner.Name;
+    $destContext = New-Object System.DirectoryServices.ActiveDirectory.DirectoryContext("domain",$destinationDomain);
+    $destPdc = [System.DirectoryServices.ActiveDirectory.Domain]::GetDomain($destContext).PdcRoleOwner.Name;    
+    # source group object, members
+    $sContx = new-object System.DirectoryServices.AccountManagement.PrincipalContext("domain",$srcPdc);
+    $srcGr = [System.DirectoryServices.AccountManagement.GroupPrincipal]::FindByIdentity($sContx, $sourceGroup);
+    # destination group object, members
+    $dContx = new-object System.DirectoryServices.AccountManagement.PrincipalContext("domain",$destPdc);
+    $destGr = [System.DirectoryServices.AccountManagement.GroupPrincipal]::FindByIdentity($dContx, $destinationGroup);
+    
+    [bool]$allDestMembersInSrc = $true;
+    $destGr.Members.ForEach({
+        $objMember = [System.DirectoryServices.AccountManagement.UserPrincipal]::FindByIdentity($sContx,$_.samAccountName);
+        if($objMember)
+        {
+            if(!($objMember.IsMemberOf($srcGr)))
+            {
+                $allDestMembersInSrc = $false
+            }
+        }  
+    });
+
+    [bool]$allSrcMembersInDest = $true;
+    $srcGr.Members.ForEach({
+        $objMember = [System.DirectoryServices.AccountManagement.UserPrincipal]::FindByIdentity($dContx,$_.samAccountName);
+        if($objMember)
+        {
+            if(!($objMember.IsMemberOf($destGr)))
+            {
+                $allSrcMembersInDest = $false;
+            }
+        }
+    });
+    if($allDestMembersInSrc -and $allSrcMembersInDest)
+    {
+        return $true;
+    }
+    else
+    {
+        return $false;
+    }
+}
+function Get-MembershipBackup
+{
+    [CmdletBinding()]
+    [OutputType([bool])]
+    Param
+    (
+        [Parameter(Mandatory=$true,
+                   Position=0)]
+        $group,
+        [Parameter(Mandatory=$true,
+                   Position=1)]
+        $domain,
+        [Parameter(Mandatory=$true,
+                   Position=2)]
+        $backupRepository
+    )
+
+    Add-Type -AssemblyName System.DirectoryServices.AccountManagement;
+    $adContext = New-Object System.DirectoryServices.ActiveDirectory.DirectoryContext("domain",$domain);
+    $pdc = [System.DirectoryServices.ActiveDirectory.Domain]::GetDomain($adContext).PdcRoleOwner.Name;
+    $prinContx = New-Object System.DirectoryServices.AccountManagement.PrincipalContext("domain",$pdc);
+    $groupObj = [System.DirectoryServices.AccountManagement.GroupPrincipal]::FindByIdentity($prinContx,$group);
+    $bckDir = [string]::Format("{0}\{1}",$backupRepository,[datetime]::Today.ToString("dd-MM-yyyy"));
+    if(!([System.IO.Directory]::Exists($bckDir)))
+    {
+        [void][System.IO.Directory]::CreateDirectory($bckDir);
+    }
+    $bckFile = [string]::Format("{0}\{1}\{2}.txt",$backupRepository,[datetime]::Today.ToString("dd-MM-yyyy"),$group);
+    $stream = new-object System.IO.StreamWriter($bckFile);
+        if($groupObj.members.count -gt 0) {
+            $groupObj.members | % {
+                $stream.WriteLine($_.distinguishedname);
+            }
+        }
+        else
+        {
+            $stream.WriteLine("no members");
+        }
+    $stream.Close();
+    $return = $true;
+    if(!([System.IO.File]::Exists($bckFile)))
+    {
+        $return = $false;
+    }
+    return $return;
+}
+function Get-NonEquivalentUsers
+{
+    [CmdletBinding()]
+    Param
+    (
+        [Parameter(Mandatory=$true,
+                   Position=0)]
+        $sourceGroup = "PRD.16.SYSA.GESP.ClaimsNonLife",       
+        [Parameter(Mandatory=$true,
+                   Position=1)]
+        [ValidateSet("dvsys", "belwired")]
+        $sourceDomain = "dvsys",
+        [Parameter(Mandatory=$true,
+                   Position=2)]
+        [ValidateSet("dvsys", "belwired")]
+        $destinationDomain = "belwired",
+        [Parameter(Mandatory=$true,
+                   Position=3)]
+        $reportDirectory = "C:\temp"
+    )
+    Add-Type -AssemblyName System.DirectoryServices.AccountManagement;
+    # pdc find
+    $srcContext = New-Object System.DirectoryServices.ActiveDirectory.DirectoryContext("domain",$sourceDomain);
+    $srcpdc = [System.DirectoryServices.ActiveDirectory.Domain]::GetDomain($srcContext).PdcRoleOwner.Name;
+    $destContext = New-Object System.DirectoryServices.ActiveDirectory.DirectoryContext("domain",$destinationDomain);
+    $destPdc = [System.DirectoryServices.ActiveDirectory.Domain]::GetDomain($destContext).PdcRoleOwner.Name;    
+    # source group object, members
+    $sContx = new-object System.DirectoryServices.AccountManagement.PrincipalContext("domain",$srcPdc);
+    $srcGr = [System.DirectoryServices.AccountManagement.GroupPrincipal]::FindByIdentity($sContx, $sourceGroup);
+    $dContx = new-object System.DirectoryServices.AccountManagement.PrincipalContext("domain",$destPdc);
+    $missingUsers = @();
+    $report = [string]::format("{0}\{1}_missing_users_in_{2}.log",$reportDirectory,$sourceGroup,$destinationDomain);
+    $srcGr.Members | % {
+        if(!([System.DirectoryServices.AccountManagement.UserPrincipal]::FindByIdentity($dContx,$_.samaccountname)))
+        {
+            $missingUsers += $_.SamAccountName;
+        }
+    };
+    if($missingUsers.Count -gt 0)
+    {
+        $stream = [System.IO.StreamWriter]($report);
+        $missingUsers | % {$stream.WriteLine($_)};
+        $stream.Dispose(); 
+    } 
+    else
+    {
+        if([System.IO.File]::Exists($report))
+        {
+            [System.IO.File]::Delete($report);
+        }
+    }   
+}
+
+$totalProcess = Measure-Command {
+
+    # log file
+    $log = [string]::Format("\\dvsys.dv.be\dfs\APPSSHARE\prd\sysa\GESP-copylogs\{0}.log",[datetime]::Today.ToString("dd_MM_yyyy"));
+    # backup directory
+    $backupRepository = "\\dvsys.dv.be\dfs\APPSSHARE\prd\sysa\GESP-backup";
+    $nonEquivalentRepository = "\\dvsys.dv.be\dfs\APPSSHARE\prd\sysa\GESP-missing users";
+    # pdc findings
+    $adContext = New-Object System.DirectoryServices.ActiveDirectory.DirectoryContext("domain","dvsys.dv.be");
+    $sourcePdc = [System.DirectoryServices.ActiveDirectory.Domain]::GetDomain($adContext).PdcRoleOwner.Name;
+    # gatehering group list
+    $sourceGroups = (Get-ADGroup -Server $sourcePdc -LDAPFilter "(samaccountname=PRD.16.SYSA.GESP*)").SamAccountName;
+    #$sourceGroups = (Get-ADGroup -Server $sourcePdc -LDAPFilter "(samaccountname=PRD.16.SYSA.GESP.CORONA)").SamAccountName;
+    #$sourceGroups = (Get-ADGroup -Server $sourcePdc -LDAPFilter "(samaccountname=t3st)").SamAccountName;
+
+    $total = ($sourceGroups).count;
+    # starting log entries
+    Write-Log -logPath $log -logString "-----Script start------------------------------";
+    Write-Log -logPath $log -logString "script start on: $env:COMPUTERNAME";
+    Write-Log -logPath $log -logString "total groups found : $total";
+    Write-Log -logPath $log -logString "current state of groups will be placed in $backupRepository";
+    Write-Log -logPath $log -logString "-----------------------------------------------";
+
+    foreach($gr in $sourceGroups) 
+    {
+        # measure for single group action
+        $sProc = Measure-Command {
+
+            Write-Log -logPath $log -logString "Action for $gr";
+            # groups validation if exist in both domain
+            if(Validate-Group -group $gr -domains @("dvsys.dv.be","belwired.net"))
+            {
+                Write-Log -logPath $log -logString "group exist in both domain";
+                # make a backup of membership state
+                $backup = Get-MembershipBackup -group $gr -domain "belwired.net" -backupRepository $backupRepository;
+                if($backup)
+                {
+                    Write-Log -logPath $log -logString "membership backup done"
+                };
+
+                # generate user with no equivalent in destination domain
+                Write-Log -logPath $log -logString "Generate report of user with no equivalent (is fo) to $nonEquivalentRepository";
+                Get-NonEquivalentUsers -sourceGroup $gr -sourceDomain dvsys -destinationDomain belwired -reportDirectory $nonEquivalentRepository;
+
+                # groups membership compare if is the same
+                if(!(Compare-GroupMemberships -sourceGroup $gr -destinationGroup $gr -sourceDomain dvsys -destinationDomain belwired))
+                {
+                    Write-Log -logPath $log -logString "group membership is NOT EQUAL, synchronization will be executed";
+
+                    # copying group membership
+                    $copy = Copy-GroupMembers -sourceGroup $gr -destinationGroup $gr -sourceDomain dvsys -destinationDomain belwired -log $log;
+                    if($copy)
+                    {
+                        Write-Log -logPath $log -logString "copying process finished!";
+                    }
+
+                    # removing group membership
+                    $remove = Remove-UnnecesarryGroupMembers -sourceGroup $gr -targetGroup $gr -sourceDomain dvsys -targetDomain belwired -log $log;
+                    if($remove)
+                    {
+                        Write-Log -logPath $log -logString "removing process finished!";
+                    }
+
+                    # verification 
+                    $verify = Compare-GroupMemberships -sourceGroup $gr -destinationGroup $gr -sourceDomain dvsys -destinationDomain belwired;
+                    if($verify)
+                    {
+                        Write-Log -logPath $log -logString "group membership is EQUAL";
+                    }
+                    Write-Log -logPath $log -logString "all actions done!";
+                }
+                else
+                {
+                    Write-Log -logPath $log -logString "group membership is EQUAL, synchronization not needed";
+                }
+
+            }
+            else
+            {
+                Write-Log -logPath $log -logString "group cannot be found in one or both domains, synchronization skip";
+            }           
+        }
+        Write-Log -logPath $log -logString $([string]::format("total sync time for this group: {0} min,{1} sec",$sProc.Minutes,$sProc.Seconds));
+    }
+}
+Write-Log -logPath $log -logString $([string]::format("total sync time for all groups: {0} min,{1} sec",$totalProcess.Minutes,$totalProcess.Seconds));
+Write-Log -logPath $log -logString "Script end.";
